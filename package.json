@@ -1,0 +1,18 @@
+{
+  "name": "podcast-agent",
+  "version": "1.0.0",
+  "description": "Autonomous AI agent that fetches, analyzes, and summarizes the Everyday AI Podcast episode",
+  "type": "module",
+  "scripts": {
+    "start": "tsx podcast-agent.ts",
+    "start:episode": "tsx podcast-agent.ts --episode",
+    "test": "tsx podcast-agent.ts --test"
+  },
+  "dependencies": {
+    "typebox": "^1.3.7"
+  },
+  "devDependencies": {
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  }
+}
