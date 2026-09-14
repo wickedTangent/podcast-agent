@@ -1,0 +1,19 @@
+{
+  "name": "Everyday AI Podcast",
+  "host": "Jordan Wilson",
+  "website": "https://youreverydayai.com",
+  "rss": "https://feeds.buzzsprout.com/2175779.rss",
+  "transcriptSource": "website",
+  "transcriptPattern": {
+    "type": "regex",
+    "pattern": "(\\b[A-Z][a-zA-Z\\s.]+?)\\s*\\[(\\d{2}:\\d{2}:\\d{2})\\]:\\s*([\\s\\S]*?)(?=(?:\\s*[A-Z][a-zA-Z\\s.]+\\s*\\[\\d{2}:\\d{2}:\\d{2}\\]:)|$)",
+    "format": "speaker [timestamp]: text"
+  },
+  "episodeNumberPattern": "ep-(\\d+)",
+  "digestsDir": "everyday-ai",
+  "agentPrompt": {
+    "intro": "You are a podcast research agent. Analyze this episode of the Everyday AI Podcast and create a structured digest.",
+    "format": "markdown",
+    "sections": ["topics", "announcements", "links"]
+  }
+}

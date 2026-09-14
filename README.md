@@ -1,97 +1,90 @@
 # Podcast Agent
 
-Autonomous AI agent built on Pi Agent that fetches, analyzes, and summarizes the latest Everyday AI Podcast episode.
-
-## What it does
-
-1. Fetches the latest episode from the podcast RSS feed
-2. Scrapes the full timestamped transcript from the episode page
-3. Sends the transcript to the Pi agent (Qwen via llama.cpp)
-4. Agent identifies topics, researches each with web searches, compiles digest
-5. Saves a structured .md digest with verified source links
-
-## Setup
-
-```bash
-cd ~/code/addAI/podcast-agent
-npm install
-```
-
-## Usage
-
-### Run against the latest episode
-
-```bash
-npx tsx podcast-agent.ts
-```
-
-### Run against a specific episode (for testing)
-
-```bash
-npx tsx podcast-agent.ts --episode https://youreverydayai.com/ep-841-chatgpt-computer-history/
-```
-
-### Test mode (verify tools work without the agent)
-
-```bash
-npx tsx podcast-agent.ts --test
-```
-
-### Output
-
-Digests are saved to `digests/` as one `.md` file per episode:
-- `digests/2026-08-14-ep841.md`
-- `digests/2026-08-13-ep840.md`
-
-Each digest contains:
-- Episode metadata (number, date, source URL)
-- Topic-by-topic summaries with specific details (model names, pricing, benchmarks)
-- Verified source links for each claim
-- Key announcements section
-- Optional "links to explore" section
-
-### Scheduling (WSL cron)
-
-Add to crontab (`crontab -e`):
-
-```cron
-# Run every weekday at 6 AM
-0 6 * * 1-5 cd /home/jgraver/code/addAI/podcast-agent && npx tsx podcast-agent.ts >> /home/jgraver/code/addAI/podcast-agent/cron.log 2>&1
-```
+Autonomous AI agent that fetches, analyzes, and summarizes podcast episodes into structured Markdown digests with verified source links.
 
 ## Architecture
 
-- **TypeScript** script using Node.js spawn to run the Pi CLI
-- **Pi CLI** (`pi -p`) runs the autonomous agent with all extensions loaded
-- **Qwen3.6-35B** via llama.cpp at default thinking level
-- **Custom tools**: agent uses bash tool for web searches (curl to DuckDuckGo) and write tool to save digests
-- **8000 char transcript limit**: keeps prompts small for reliable agent responses
-- **300 second timeout**: prevents runaway execution
-- **Duplicate detection**: skips episodes already processed
+- **Generic runner** (`podcast-agent.ts`) works with any podcast
+- **Per-podcast configs** (`podcasts/<name>/config.json`) define podcast-specific settings
+- **Per-podcast digests** (`podcasts/<name>/digests/`) store episode summaries
 
-## How the Agent Works
+## Usage
 
-The agent receives the episode transcript and:
+```bash
+# Process latest episode from a podcast
+npx tsx podcast-agent.ts --podcast everyday-ai --latest
 
-1. **Identifies topics** - Scans the transcript for major segments (typically 5-8 topics)
-2. **Researches each topic** - Uses curl to search DuckDuckGo for official source links
-3. **Compiles the digest** - Writes a structured Markdown document
-4. **Self-verifies** - Checks every claim has a supporting link
-5. **Saves the digest** - Writes to `digests/YYYY-MM-DD-epNNN.md`
+# Process a specific episode by URL
+npx tsx podcast-agent.ts --podcast everyday-ai --episode <url>
 
-## Configuration
+# Process a specific episode from a different podcast
+npx tsx podcast-agent.ts --podcast the-startup-ideas --episode <url>
 
-Edit `podcast-agent.ts` to change:
+# Test mode (verify config, transcript scraping, web search)
+npx tsx podcast-agent.ts --podcast everyday-ai --test
+```
 
-- `RSS_FEED_URL` - the podcast RSS feed URL
-- `DIGESTS_DIR` - output directory for digests
-- `MAX_TRANSCRIPT_CHARS` - maximum transcript size sent to agent
-- `PI_TIMEOUT_MS` - maximum agent execution time
-- `PI_CLI` - path to Pi CLI binary
+## Adding a New Podcast
 
-## Known Limitations
+1. Create a directory: `mkdir -p podcasts/<podcast-name>/digests`
+2. Create a config file: `podcasts/<podcast-name>/config.json`
+3. Run the agent: `npx tsx podcast-agent.ts --podcast <podcast-name> --episode <url>`
 
-- **Episode pages**: Only episodes up to ~841 have individual pages with transcripts. Newer episodes (842+) don't have pages yet - the agent will report this and skip.
-- **Transcript size**: Limited to 8000 chars for reliable agent responses. The beginning of the transcript (most important content) is kept.
-- **Web search**: Uses DuckDuckGo HTML endpoint (free, no API key needed). May not find all sources.
-- **Model**: Uses Qwen3.6-35B via llama.cpp. Strong for summarization but may miss nuanced details that stronger models (Claude, GPT) could catch.
+### Config File Structure
+
+```json
+{
+  "name": "Podcast Name",
+  "host": "Host Name",
+  "website": "https://example.com",
+  "rss": "https://feeds.example.com/podcast.rss",
+  "transcriptSource": "website|podscripts",
+  "transcriptPattern": {
+    "type": "regex",
+    "pattern": "Your regex pattern here"
+  },
+  "episodeNumberPattern": "ep-(\\d+)",
+  "agentPrompt": {
+    "intro": "You are a podcast research agent...",
+    "format": "markdown",
+    "sections": ["topics", "announcements", "links"]
+  }
+}
+```
+
+## Transcript Sources
+
+- **website** -- Transcript embedded in episode page HTML (e.g., Everyday AI Podcast)
+- **podscripts** -- Transcript from podscripts.co (e.g., The Startup Ideas Podcast)
+
+## Directory Structure
+
+```
+podcast-agent/
+  podcast-agent.ts          # Generic runner
+  package.json
+  tsconfig.json
+  podcasts/
+    everyday-ai/
+      config.json           # Podcast-specific settings
+      digests/              # Episode digests
+    the-startup-ideas/
+      config.json
+      digests/
+```
+
+## How It Works
+
+1. **Fetch episode info** -- RSS feed or manual URL
+2. **Scrape transcript** -- Extract text using configured pattern
+3. **Run Pi agent** -- Full transcript sent to Qwen3.6 via Pi CLI
+4. **Agent researches** -- Identifies topics, searches for sources, writes digest
+5. **Save digest** -- Structured Markdown with verified links
+
+## Constraints
+
+- Uses Pi CLI (not SDK) for llama.cpp extension loading
+- Full transcripts (no artificial truncation)
+- Zero hallucinations: every claim must have a real link
+- Local skip: skips episodes that already have a digest
+- No em-dashes in code or output

@@ -1,15 +1,20 @@
 /**
  * podcast-agent.ts
  *
- * Autonomous AI agent that:
- * 1. Fetches the latest Everyday AI Podcast episode
- * 2. Scrapes its transcript
- * 3. Sends it to Pi agent for analysis
- * 4. Agent identifies topics, researches sources, writes digest
- * 5. Script reads the saved digest
+ * Generic autonomous AI agent that:
+ * 1. Loads a podcast config from podcasts/<podcast>/config.json
+ * 2. Fetches episode info (RSS or manual URL)
+ * 3. Scrapes transcript (pattern configurable per podcast)
+ * 4. Sends it to Pi agent for analysis
+ * 5. Agent identifies topics, researches sources, writes digest
+ * 6. Script reads the saved digest
  *
- * Uses Pi CLI (which has all extensions loaded, including llama.cpp)
- * to run the autonomous agent.
+ * Usage:
+ *   npx tsx podcast-agent.ts --podcast everyday-ai
+ *   npx tsx podcast-agent.ts --podcast everyday-ai --episode <url>
+ *   npx tsx podcast-agent.ts --podcast the-startup-ideas --episode <url>
+ *   npx tsx podcast-agent.ts --podcast the-startup-ideas --latest
+ *   npx tsx podcast-agent.ts --podcast the-startup-ideas --test
  */
 
 import { spawn } from "child_process";
@@ -17,32 +22,40 @@ import * as fs from "fs";
 import * as path from "path";
 
 // ---------------------------------------------------------------------------
-// Configuration
+// Global config
 // ---------------------------------------------------------------------------
 
-const RSS_FEED_URL = "https://feeds.buzzsprout.com/2175779.rss";
-const DIGESTS_DIR = "./digests";
-const MAX_TRANSCRIPT_CHARS = 999999; // Effectively unlimited; full transcripts are faster and more complete
 const PI_TIMEOUT_MS = 300_000; // 5 minutes
-
-// Pi CLI path
 const PI_CLI = "/home/jgraver/.nvm/versions/node/v24.20.0/bin/pi";
+const PODCASTS_DIR = path.join(process.cwd(), "podcasts");
 
 // ---------------------------------------------------------------------------
 // CLI argument parsing
 // ---------------------------------------------------------------------------
 
 function parseArgs(): {
+  podcast?: string;
   episodeUrl?: string;
+  latest?: boolean;
   testMode?: boolean;
 } {
   const args = process.argv.slice(2);
-  const result: { episodeUrl?: string; testMode?: boolean } = {};
+  const result: {
+    podcast?: string;
+    episodeUrl?: string;
+    latest?: boolean;
+    testMode?: boolean;
+  } = {};
 
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--episode" && i + 1 < args.length) {
+    if (args[i] === "--podcast" && i + 1 < args.length) {
+      result.podcast = args[i + 1];
+      i++;
+    } else if (args[i] === "--episode" && i + 1 < args.length) {
       result.episodeUrl = args[i + 1];
       i++;
+    } else if (args[i] === "--latest") {
+      result.latest = true;
     } else if (args[i] === "--test") {
       result.testMode = true;
     }
@@ -52,15 +65,64 @@ function parseArgs(): {
 }
 
 // ---------------------------------------------------------------------------
-// Data fetching
+// Helpers
 // ---------------------------------------------------------------------------
 
-async function fetchLatestEpisode(): Promise<{
+function getDigestsDir(config: PodcastConfig): string {
+  const dir = config.digestsDir || config.name.toLowerCase().replace(/\s+/g, "-");
+  return path.join(PODCASTS_DIR, dir);
+}
+
+// ---------------------------------------------------------------------------
+// Config loading
+// ---------------------------------------------------------------------------
+
+interface TranscriptPattern {
+  type: string;
+  [key: string]: any;
+}
+
+interface PodcastConfig {
+  name: string;
+  host: string;
+  website: string;
+  rss: string | null;
+  transcriptSource: string;
+  transcriptPattern: TranscriptPattern;
+  episodeNumberPattern: string | null;
+  digestsDir?: string; // Override for where digests are saved (defaults to name converted to kebab-case)
+  agentPrompt: {
+    intro: string;
+    format: string;
+    sections: string[];
+  };
+}
+
+function loadPodcastConfig(podcastName: string): PodcastConfig {
+  const configPath = path.join(PODCASTS_DIR, podcastName, "config.json");
+  if (!fs.existsSync(configPath)) {
+    throw new Error(
+      `Config not found: ${configPath}. Run with --podcast <directory-name>`
+    );
+  }
+  return JSON.parse(fs.readFileSync(configPath, "utf-8"));
+}
+
+// ---------------------------------------------------------------------------
+// Episode finding
+// ---------------------------------------------------------------------------
+
+async function fetchLatestEpisode(config: PodcastConfig): Promise<{
   title: string;
   pubDate: string;
   description: string;
+  url: string;
 }> {
-  const response = await fetch(RSS_FEED_URL, {
+  if (!config.rss) {
+    throw new Error("No RSS feed configured for this podcast");
+  }
+
+  const response = await fetch(config.rss, {
     signal: AbortSignal.timeout(15000),
   });
   if (!response.ok) throw new Error(`RSS fetch failed: ${response.status}`);
@@ -72,7 +134,10 @@ async function fetchLatestEpisode(): Promise<{
   const item = itemMatch[1];
   const titleMatch = item.match(/<title>([\s\S]*?)<\/title>/);
   const pubDateMatch = item.match(/<pubDate>([\s\S]*?)<\/pubDate>/);
-  const descriptionMatch = item.match(/<description>([\s\S]*?)<\/description>/);
+  const descriptionMatch = item.match(
+    /<description>([\s\S]*?)<\/description>/
+  );
+  const linkMatch = item.match(/<link>([\s\S]*?)<\/link>/);
 
   return {
     title: titleMatch
@@ -82,17 +147,25 @@ async function fetchLatestEpisode(): Promise<{
     description: descriptionMatch
       ? descriptionMatch[1].replace(/<[^>]*>/g, "").trim().substring(0, 500)
       : "No description",
+    url: linkMatch
+      ? linkMatch[1].replace(/<[^>]*>/g, "").trim()
+      : config.website,
   };
 }
 
-async function scrapeTranscript(url: string): Promise<{
-  title: string;
-  transcript: string;
-}> {
+// ---------------------------------------------------------------------------
+// Transcript scraping (configurable per podcast)
+// ---------------------------------------------------------------------------
+
+async function scrapeTranscriptWebsite(
+  url: string,
+  pattern: TranscriptPattern
+): Promise<{ title: string; transcript: string }> {
   const response = await fetch(url, {
     signal: AbortSignal.timeout(20000),
   });
-  if (!response.ok) throw new Error(`Failed to fetch episode page: ${response.status}`);
+  if (!response.ok)
+    throw new Error(`Failed to fetch episode page: ${response.status}`);
   const html = await response.text();
 
   const titleMatch = html.match(/<h1[^>]*>(.*?)<\/h1>/s);
@@ -100,13 +173,11 @@ async function scrapeTranscript(url: string): Promise<{
     ? titleMatch[1].replace(/<[^>]*>/g, "").trim()
     : "Unknown title";
 
-  // Extract transcript: "Speaker [HH:MM:SS]:" pattern
-  const transcriptRegex =
-    /(\b[A-Z][a-zA-Z\s.]+?)\s*\[(\d{2}:\d{2}:\d{2})\]:\s*([\s\S]*?)(?=(?:\s*[A-Z][a-zA-Z\s.]+\s*\[\d{2}:\d{2}:\d{2}\]:)|$)/g;
-
+  // Extract transcript using configured regex pattern
+  const regex = new RegExp(pattern.pattern, "g");
   let transcript = "";
   let match;
-  while ((match = transcriptRegex.exec(html)) !== null) {
+  while ((match = regex.exec(html)) !== null) {
     const speaker = match[1].replace(/<[^>]*>/g, "").trim();
     const timestamp = match[2];
     const text = match[3].replace(/<[^>]*>/g, "").trim();
@@ -122,11 +193,76 @@ async function scrapeTranscript(url: string): Promise<{
   return { title, transcript };
 }
 
-function digestExists(episodeNum: string): boolean {
-  const digestsPath = path.join(process.cwd(), DIGESTS_DIR);
+async function scrapeTranscriptPodscripts(
+  url: string,
+  pattern: TranscriptPattern
+): Promise<{ title: string; transcript: string }> {
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(20000),
+  });
+  if (!response.ok)
+    throw new Error(`Failed to fetch episode page: ${response.status}`);
+  const html = await response.text();
+
+  // Extract title from HTML
+  const titleMatch = html.match(/<title>(.*?)<\/title>/);
+  const title = titleMatch
+    ? titleMatch[1].replace(/<[^>]*>/g, "").trim()
+    : "Unknown title";
+
+  // Extract transcript text from podscripts.co format
+  // The HTML has newlines/whitespace between > and the text
+  const regex =
+    /class="pod_text seek_pod_segment sentence-tooltip transcript-text">\s*([\s\S]*?)\s*<\/span>/g;
+  let transcript = "";
+  let match;
+  while ((match = regex.exec(html)) !== null) {
+    const text = match[1].replace(/<[^>]*>/g, "").trim();
+    if (text.length > 10) {
+      transcript += text + " ";
+    }
+  }
+
+  if (transcript.length < 50) {
+    throw new Error(
+      "Could not extract transcript from podscripts.co page"
+    );
+  }
+
+  return { title, transcript };
+}
+
+async function scrapeTranscript(
+  url: string,
+  config: PodcastConfig
+): Promise<{ title: string; transcript: string }> {
+  switch (config.transcriptSource) {
+    case "website":
+      return scrapeTranscriptWebsite(url, config.transcriptPattern);
+    case "podscripts":
+      return scrapeTranscriptPodscripts(url, config.transcriptPattern);
+    default:
+      throw new Error(
+        `Unknown transcript source: ${config.transcriptSource}`
+      );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Digest existence check
+// ---------------------------------------------------------------------------
+
+function digestExists(
+  config: PodcastConfig,
+  episodeNum: string | null
+): boolean {
+  const digestsPath = path.join(getDigestsDir(config), "digests");
   if (!fs.existsSync(digestsPath)) return false;
   const files = fs.readdirSync(digestsPath).filter((f) => f.endsWith(".md"));
-  return files.some((f) => f.includes(`ep-${episodeNum}`));
+  if (episodeNum) {
+    return files.some((f) => f.includes(`ep-${episodeNum}`) || f.includes(`ep${episodeNum}`));
+  }
+  return files.length > 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -139,7 +275,6 @@ function runPiAgent(prompt: string): Promise<string> {
     let output = "";
     let stderr = "";
 
-    // Write prompt to temp file
     const tmpFile = path.join(process.cwd(), ".pi-agent-prompt.txt");
     fs.writeFileSync(tmpFile, prompt);
 
@@ -159,7 +294,9 @@ function runPiAgent(prompt: string): Promise<string> {
     });
 
     const cleanup = () => {
-      try { fs.unlinkSync(tmpFile); } catch {}
+      try {
+        fs.unlinkSync(tmpFile);
+      } catch {}
     };
 
     pi.on("close", (code) => {
@@ -168,9 +305,11 @@ function runPiAgent(prompt: string): Promise<string> {
       if (code === 0) {
         resolve(output.trim());
       } else {
-        reject(new Error(
-          `Pi agent exited with code ${code} after ${elapsed}s. Stderr: ${stderr.substring(0, 500)}`
-        ));
+        reject(
+          new Error(
+            `Pi agent exited with code ${code} after ${elapsed}s. Stderr: ${stderr.substring(0, 500)}`
+          )
+        );
       }
     });
 
@@ -179,7 +318,6 @@ function runPiAgent(prompt: string): Promise<string> {
       reject(new Error(`Failed to start Pi agent: ${err.message}`));
     });
 
-    // Safety timeout
     const timer = setTimeout(() => {
       pi.kill("SIGTERM");
       cleanup();
@@ -194,22 +332,27 @@ function runPiAgent(prompt: string): Promise<string> {
 // ---------------------------------------------------------------------------
 
 function buildPrompt(
+  config: PodcastConfig,
   episodeTitle: string,
   pubDate: string,
   transcript: string,
   episodeNum: string | null,
   episodeUrl: string | null
 ): string {
-  const dateStr = pubDate !== "Unknown"
-    ? new Date(pubDate).toISOString().split("T")[0]
-    : "2026-08-14";
-  const saveFile = `digests/${dateStr}-ep${episodeNum || "???"}.md`;
-  return `You are a podcast research agent. Analyze this episode of the Everyday AI Podcast and create a structured digest.
+  const dateStr =
+    pubDate !== "Unknown"
+      ? new Date(pubDate).toISOString().split("T")[0]
+      : "2026-08-14";
+
+  const saveFile = path.join(getDigestsDir(config), "digests", `${dateStr}-ep${episodeNum || "???"}.md`);
+
+  return `You are a podcast research agent. ${config.agentPrompt.intro}
 
 ## Episode Info
 ${episodeUrl ? `**URL:** ${episodeUrl}` : "**URL:** Not found"}
 **Title:** ${episodeTitle}
 **Date:** ${pubDate}
+**Host:** ${config.host}
 **Episode Number:** ${episodeNum || "Unknown"}
 
 ## Transcript
@@ -262,17 +405,20 @@ Now begin. Identify topics, research each with web searches, compile the digest,
 // Test mode
 // ---------------------------------------------------------------------------
 
-async function runTest(): Promise<void> {
-  console.log("=== Podcast Agent -- Test Mode ===\n");
+async function runTest(config: PodcastConfig): Promise<void> {
+  console.log(`=== Podcast Agent -- Test Mode (${config.name}) ===\n`);
 
-  console.log("Test 1: Fetching RSS feed...");
-  const episode = await fetchLatestEpisode();
-  console.log(`  Title: ${episode.title}`);
-  console.log(`  Date: ${episode.pubDate}\n`);
+  console.log("Test 1: Loading config...");
+  console.log(`  Name: ${config.name}`);
+  console.log(`  Website: ${config.website}`);
+  console.log(`  Transcript source: ${config.transcriptSource}\n`);
 
   console.log("Test 2: Scraping transcript...");
-  const testUrl = "https://youreverydayai.com/ep-841-chatgpt-computer-history-new-gemini-model-claude-flexes-on-the-browser-and-7-more-ai-updates-you-should-use-today/";
-  const transcript = await scrapeTranscript(testUrl);
+  const testUrl =
+    config.transcriptSource === "podscripts"
+      ? "https://podscripts.co/podcasts/the-startup-ideas-podcast/fde-the-1myear-ai-job-explained"
+      : "https://youreverydayai.com/ep-841-chatgpt-computer-history-new-gemini-model-claude-flexes-on-the-browser-and-7-more-ai-updates-you-should-use-today/";
+  const transcript = await scrapeTranscript(testUrl, config);
   const lines = transcript.transcript.split("\n").filter((l) => l.trim());
   console.log(`  Transcript: ${transcript.transcript.length} chars, ${lines.length} lines`);
   console.log(`  First 3 lines:`);
@@ -282,12 +428,19 @@ async function runTest(): Promise<void> {
   console.log("Test 3: Web search via curl...");
   const searchResult = await new Promise<string>((resolve, reject) => {
     const curl = spawn("curl", [
-      "-s", "-A", "Mozilla/5.0",
-      "https://html.duckduckgo.com/html/?q=" + encodeURIComponent("OpenAI GPT-5.6 announcement")
+      "-s",
+      "-A",
+      "Mozilla/5.0",
+      "https://html.duckduckgo.com/html/?q=" +
+        encodeURIComponent("OpenAI GPT-5.6 announcement"),
     ]);
     let out = "";
     curl.stdout.on("data", (d) => (out += d.toString()));
-    curl.on("close", (code) => code === 0 ? resolve(out.substring(0, 300)) : reject(new Error(`curl exited ${code}`)));
+    curl.on("close", (code) =>
+      code === 0
+        ? resolve(out.substring(0, 300))
+        : reject(new Error(`curl exited ${code}`))
+    );
   });
   console.log(`  Preview: ${searchResult.substring(0, 200)}...\n`);
 
@@ -298,8 +451,11 @@ async function runTest(): Promise<void> {
 // Main
 // ---------------------------------------------------------------------------
 
-async function runAgent(episodeUrl?: string): Promise<void> {
-  console.log("=== Podcast Agent Starting ===\n");
+async function runAgent(
+  config: PodcastConfig,
+  episodeUrl?: string
+): Promise<void> {
+  console.log(`=== Podcast Agent Starting (${config.name}) ===\n`);
 
   // Get episode info
   console.log("Step 1: Fetching episode info...");
@@ -313,7 +469,7 @@ async function runAgent(episodeUrl?: string): Promise<void> {
     episodeTitle = "Specific episode (URL provided)";
     pubDate = "Unknown";
   } else {
-    const episode = await fetchLatestEpisode();
+    const episode = await fetchLatestEpisode(config);
     episodeTitle = episode.title;
     pubDate = episode.pubDate;
     const numMatch = episodeTitle.match(/(?:ep|episode)\s*(\d+)/i);
@@ -325,7 +481,7 @@ async function runAgent(episodeUrl?: string): Promise<void> {
   console.log(`  Date: ${pubDate}\n`);
 
   // Check if already processed
-  if (episodeNum && digestExists(episodeNum)) {
+  if (episodeNum && digestExists(config, episodeNum)) {
     console.log(`Digest for episode ${episodeNum} already exists. Skipping.`);
     return;
   }
@@ -334,10 +490,9 @@ async function runAgent(episodeUrl?: string): Promise<void> {
   let url = episodeUrl;
   if (!url) {
     console.log("Step 2: Finding episode page URL...");
-    // Try DuckDuckGo search
     const searchQuery = episodeNum
-      ? `Ep ${episodeNum} ${episodeTitle.replace(/Ep \d+:\s*/, "")} site:youreverydayai.com`
-      : `${episodeTitle} site:youreverydayai.com`;
+      ? `Ep ${episodeNum} ${episodeTitle.replace(/Ep \d+:\s*/, "")} site:${config.website.replace("https://", "")}`
+      : `${episodeTitle} site:${config.website.replace("https://", "")}`;
     const encodedQuery = encodeURIComponent(searchQuery);
     const searchUrl = `https://html.duckduckgo.com/html/?q=${encodedQuery}`;
 
@@ -351,7 +506,7 @@ async function runAgent(episodeUrl?: string): Promise<void> {
         const resultMatch = html.match(
           /<a rel="nofollow" class="result__a[^"]*" href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/
         );
-        if (resultMatch && resultMatch[1].includes("youreverydayai.com/ep-")) {
+        if (resultMatch && resultMatch[1].includes(config.website.replace("https://", "").split("/")[0])) {
           url = resultMatch[1];
           console.log(`  Found: ${url}`);
         } else {
@@ -371,16 +526,9 @@ async function runAgent(episodeUrl?: string): Promise<void> {
 
   if (url) {
     try {
-      const result = await scrapeTranscript(url);
+      const result = await scrapeTranscript(url, config);
       transcript = result.transcript;
       console.log(`  Transcript: ${transcript.length} chars`);
-
-      // Truncate if too large
-      if (transcript.length > MAX_TRANSCRIPT_CHARS) {
-        console.log(`  Truncating to ${MAX_TRANSCRIPT_CHARS} chars...`);
-        transcript = transcript.substring(0, MAX_TRANSCRIPT_CHARS);
-        transcript += "\n\n--- TRANSCRIPT TRUNCATED ---\n";
-      }
     } catch (err: any) {
       console.log(`  Error: ${err.message}`);
       console.log("  The episode page may not exist yet. Check back later.");
@@ -393,17 +541,18 @@ async function runAgent(episodeUrl?: string): Promise<void> {
 
   // Run Pi agent
   console.log("\nStep 4: Running Pi agent...\n");
-  const prompt = buildPrompt(episodeTitle, pubDate, transcript, episodeNum, url);
+  const prompt = buildPrompt(config, episodeTitle, pubDate, transcript, episodeNum, url);
 
   try {
     await runPiAgent(prompt);
 
     // Get the digest (agent should have saved it)
     console.log("\nStep 5: Loading digest...");
-    const digestsPath = path.join(process.cwd(), DIGESTS_DIR);
+    const digestsPath = path.join(getDigestsDir(config), "digests");
     fs.mkdirSync(digestsPath, { recursive: true });
 
-    const files = fs.readdirSync(digestsPath)
+    const files = fs
+      .readdirSync(digestsPath)
       .filter((f) => f.endsWith(".md"))
       .sort()
       .reverse();
@@ -414,7 +563,10 @@ async function runAgent(episodeUrl?: string): Promise<void> {
     }
 
     // Find file matching this episode number first, then fall back to most recent
-    let digestFile = files.find((f) => f.includes(`ep${episodeNum}`)) || files[0];
+    let digestFile =
+      files.find((f) =>
+        episodeNum ? f.includes(`ep${episodeNum}`) : false
+      ) || files[0];
     const fullPath = path.join(digestsPath, digestFile);
     const digestContent = fs.readFileSync(fullPath, "utf-8");
 
@@ -436,8 +588,15 @@ async function runAgent(episodeUrl?: string): Promise<void> {
 async function main(): Promise<void> {
   const args = parseArgs();
 
+  if (!args.podcast) {
+    console.error("Usage: npx tsx podcast-agent.ts --podcast <podcast-dir> [--episode <url> | --latest | --test]");
+    process.exit(1);
+  }
+
+  const config = loadPodcastConfig(args.podcast);
+
   if (args.testMode) {
-    await runTest();
+    await runTest(config);
     return;
   }
 
@@ -451,7 +610,7 @@ async function main(): Promise<void> {
     }
   }
 
-  await runAgent(args.episodeUrl);
+  await runAgent(config, args.episodeUrl);
 }
 
 main().catch((err) => {

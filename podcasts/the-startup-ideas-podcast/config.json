@@ -1,0 +1,18 @@
+{
+  "name": "The Startup Ideas Podcast",
+  "host": "Greg",
+  "website": "https://podscripts.co/podcasts/the-startup-ideas-podcast",
+  "rss": null,
+  "transcriptSource": "podscripts",
+  "transcriptPattern": {
+    "type": "podscripts",
+    "urlPattern": "https://podscripts.co/podcasts/the-startup-ideas-podcast/{slug}"
+  },
+  "episodeNumberPattern": null,
+  "digestsDir": "the-startup-ideas-podcast",
+  "agentPrompt": {
+    "intro": "You are a podcast research agent. Analyze this episode and create a structured digest.",
+    "format": "markdown",
+    "sections": ["topics", "announcements", "links"]
+  }
+}
