@@ -1,8 +1,8 @@
 # Podcast Agent -- Design Document & Session Summary
 
 **Last updated:** 2026-09-13
-**Project:** ~/code/addAI/podcast-agent/
-**Purpose:** Autonomous AI agent that fetches, analyzes, and summarizes the Everyday AI Podcast episode
+**Project:** ~/code/podcast-agent/
+**Purpose:** Autonomous AI agent that fetches, analyzes, and summarizes podcast episodes into structured digests
 
 ---
 
@@ -47,14 +47,21 @@ RSS Feed (feeds.buzzsprout.com/2175779.rss)
 ### File Structure
 
 ```
-~/code/addAI/podcast-agent/
-├── podcast-agent.ts          # Main script (all logic in one file)
-├── package.json              # Dependencies: typebox, tsx
+~/code/podcast-agent/
+├── podcast-agent.ts          # Generic runner (works with any podcast)
+├── package.json              # Dependencies: typebox, tsx, @types/node
 ├── tsconfig.json             # TypeScript config (ES2022, NodeNext)
 ├── README.md                 # Usage documentation
 ├── DESIGN.md                 # This file
-├── digests/                  # Output directory (one .md per episode)
-│   └── 2026-08-14-ep841.md   # Sample digest
+├── CLAUDE.md                 # Session context summary
+├── .gitignore
+├── podcasts/                 # Per-podcast configs and digests
+│   ├── everyday-ai/
+│   │   ├── config.json       # Podcast-specific settings
+│   │   └── digests/          # 10 episode digests (ep831-840)
+│   └── the-startup-ideas-podcast/
+│       ├── config.json       # Podcast-specific settings
+│       └── digests/          # FDE episode digest
 ├── .pi-agent-prompt.txt      # Temp file for Pi CLI (auto-deleted)
 └── node_modules/
 ```

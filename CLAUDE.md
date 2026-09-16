@@ -3,17 +3,23 @@
 
 ## Project Summary
 
-Podcast Agent: Autonomous AI agent that fetches, analyzes, and summarizes the Everyday AI Podcast.
+Podcast Agent: Generic autonomous AI agent that fetches, analyzes, and summarizes podcast episodes into structured Markdown digests with verified source links.
 
-**Run:** `npx tsx podcast-agent.ts`
-**Test:** `npx tsx podcast-agent.ts --test`
-**Specific episode:** `npx tsx podcast-agent.ts --episode <url>`
+**Run:** `npx tsx podcast-agent.ts --podcast <name> [--episode <url> | --latest | --test]`
+**Test:** `npm test` (runs everyday-ai test)
+**Specific episode:** `npx tsx podcast-agent.ts --podcast <name> --episode <url>`
 
 **Key files:**
-- `podcast-agent.ts` - Main script (all logic in one file)
+- `podcast-agent.ts` - Generic runner (all logic in one file)
 - `DESIGN.md` - Full design doc, technical decisions, troubleshooting log, SDK learnings
-- `digests/` - Output directory (one .md per episode)
+- `CLAUDE.md` - Session context summary
+- `podcasts/<name>/config.json` - Per-podcast configuration
+- `podcasts/<name>/digests/` - Per-podcast episode digests
 
 **Architecture:** TypeScript script spawns Pi CLI (`pi -p @file`) which runs Qwen3.6 via llama.cpp as an autonomous agent. Agent identifies topics from transcript, researches with web searches, compiles structured digest with verified links.
 
 **Biggest lesson:** SDK doesn't load llama.cpp extension. Must use CLI for llama.cpp models. SDK works for API-based models.
+
+**Current podcasts:**
+- `everyday-ai` - Everyday AI Podcast (Jordan Wilson) - RSS feed + website transcript
+- `the-startup-ideas-podcast` - The Startup Ideas Podcast (Greg) - podscripts.co transcript

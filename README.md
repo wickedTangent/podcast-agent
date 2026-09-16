@@ -68,7 +68,7 @@ podcast-agent/
     everyday-ai/
       config.json           # Podcast-specific settings
       digests/              # Episode digests
-    the-startup-ideas/
+    the-startup-ideas-podcast/
       config.json
       digests/
 ```
