@@ -48,9 +48,11 @@ function parseArgs(): {
   } = {};
 
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--podcast" && i + 1 < args.length) {
-      result.podcast = args[i + 1];
-      i++;
+    if (args[i] === "--podcast") {
+      if (i + 1 < args.length && !args[i + 1].startsWith("--")) {
+        result.podcast = args[i + 1];
+        i++;
+      }
     } else if (args[i] === "--episode" && i + 1 < args.length) {
       result.episodeUrl = args[i + 1];
       i++;
