@@ -17,7 +17,7 @@ A TypeScript script (`podcast-agent.ts`) that runs an autonomous AI agent to:
 5. Saves a .md digest with verified source links to `digests/`
 
 Run via: `npx tsx podcast-agent.ts`
-Schedule via cron: `0 6 * * 1-5 cd /home/jgraver/code/addAI/podcast-agent && npx tsx podcast-agent.ts >> cron.log 2>&1`
+Schedule via cron: `0 6 * * 1-5 cd /home/jgraver/code/podcast-agent && npx tsx podcast-agent.ts >> cron.log 2>&1`
 
 ---
 
