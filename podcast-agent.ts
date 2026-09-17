@@ -28,6 +28,34 @@ import * as path from "path";
 const PI_TIMEOUT_MS = 300_000; // 5 minutes
 const PI_CLI = "/home/jgraver/.nvm/versions/node/v24.20.0/bin/pi";
 const PODCASTS_DIR = path.join(process.cwd(), "podcasts");
+const YOUTUBE_CHANNEL = "@EverydayAI_";
+
+// YouTube video IDs for episodes not yet on the website
+const YOUTUBE_IDS: Record<string, string> = {
+  "863": "cGXZ2UHJ_x8",
+  "862": "c-u8E15Lj8s",
+  "861": "I4CcHbQJTzY",
+  "860": "vIRhBn7W9a0",
+  "859": "eXRI3OfDRjU",
+  "858": "4rTv5FW-H18",
+  "857": "kiqtMaEJDUU",
+  "856": "OcxBE7KjlQM",
+  "855": "6MsMhUXQGys",
+  "854": "dz5YLz0wKPw",
+  "853": "Iw8wu4Fyy2s",
+  "852": "nal_ulb3FRk",
+  "851": "hnMkBxPfnLQ",
+  "850": "4H0BhON7kkM",
+  "849": "UDZVBwLoF8Q",
+  "848": "QEC3fE4fqWc",
+  "847": "cPJhOxvQhfo",
+  "846": "yVf8pV9El5Q",
+  "845": "hzZUGUOtKB0",
+  "844": "ZLP-JyYtfy0",
+  "843": "qNRI6m-ep7I",
+  "842": "w1Z_UHhMCNI",
+  "841": "SNCKm4NA8E4",
+};
 
 // ---------------------------------------------------------------------------
 // CLI argument parsing
@@ -234,10 +262,117 @@ async function scrapeTranscriptPodscripts(
   return { title, transcript };
 }
 
+async function scrapeTranscriptYouTube(
+  url: string,
+  pattern: TranscriptPattern
+): Promise<{ title: string; transcript: string }> {
+  // URL can be a YouTube video ID or full URL
+  let videoId = url;
+  const urlMatch = url.match(/(?:youtu\.be\/|watch\?v=)([a-zA-Z0-9_-]{11})/);
+  if (urlMatch) videoId = urlMatch[1];
+
+  // Use Python youtube-transcript-api (direct fetch returns empty XML)
+  const pythonPath =
+    path.join(process.cwd(), ".venv", "bin", "python3");
+  const pythonScript = `
+from youtube_transcript_api import YouTubeTranscriptApi
+api = YouTubeTranscriptApi()
+try:
+    transcript = api.fetch('${videoId}')
+    text = ' '.join([t.text for t in transcript.snippets])
+    print(text)
+except Exception as e:
+    print(f'ERROR: {e}', flush=True)
+    import sys
+    sys.exit(1)
+  `;
+  const tmpScript = path.join(process.cwd(), ".yt-transcript.py");
+  fs.writeFileSync(tmpScript, pythonScript);
+
+  return new Promise((resolve, reject) => {
+    const startTime = Date.now();
+    let output = "";
+    let stderr = "";
+
+    const py = spawn(pythonPath, ["-c", pythonScript], {
+      env: { ...process.env },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    py.stdout.on("data", (data) => {
+      output += data.toString();
+    });
+
+    py.stderr.on("data", (data) => {
+      stderr += data.toString();
+    });
+
+    const cleanup = () => {
+      try {
+        fs.unlinkSync(tmpScript);
+      } catch {}
+    };
+
+    py.on("close", (code) => {
+      cleanup();
+      if (code === 0) {
+        const text = output.trim();
+        if (text.startsWith("ERROR:")) {
+          reject(new Error(text.substring(6)));
+        } else if (text.length < 50) {
+          reject(new Error("YouTube transcript too short or empty"));
+        } else {
+          // Extract title from YouTube page
+          fetch(`https://www.youtube.com/watch?v=${videoId}`, {
+            signal: AbortSignal.timeout(10000),
+          })
+            .then((r) => r.text())
+            .then((html) => {
+              const titleMatch = html.match(/<title>(.*?)<\/title>/);
+              const title = titleMatch
+                ? titleMatch[1]
+                    .replace(/<[^>]*>/g, "")
+                    .trim()
+                    .replace(/ - YouTube$/, "")
+                : `YouTube video ${videoId}`;
+              resolve({ title, transcript: text });
+            })
+            .catch(() => {
+              resolve({ title: `YouTube video ${videoId}`, transcript: text });
+            });
+        }
+      } else {
+        reject(
+          new Error(
+            `Python transcript fetch failed (exit ${code}): ${stderr.substring(0, 300)}`
+          )
+        );
+      }
+    });
+
+    py.on("error", (err) => {
+      cleanup();
+      reject(new Error(`Failed to spawn Python: ${err.message}`));
+    });
+
+    const timer = setTimeout(() => {
+      py.kill("SIGTERM");
+      cleanup();
+      reject(new Error(`YouTube transcript fetch timed out after 60s`));
+    }, 60000);
+    timer.unref();
+  });
+}
+
 async function scrapeTranscript(
   url: string,
   config: PodcastConfig
 ): Promise<{ title: string; transcript: string }> {
+  // Auto-detect YouTube URLs
+  if (url.includes("youtube.com") || url.includes("youtu.be")) {
+    return scrapeTranscriptYouTube(url, config.transcriptPattern);
+  }
+
   switch (config.transcriptSource) {
     case "website":
       return scrapeTranscriptWebsite(url, config.transcriptPattern);
@@ -466,8 +601,20 @@ async function runAgent(
   let episodeNum: string | null = null;
 
   if (episodeUrl) {
+    // Try to extract episode number from URL
     const urlMatch = episodeUrl.match(/ep-(\d+)/);
-    episodeNum = urlMatch ? urlMatch[1] : null;
+    if (urlMatch) {
+      episodeNum = urlMatch[1];
+    } else if (episodeUrl.includes("youtube.com")) {
+      // Look up YouTube video ID in mapping
+      const ytMatch = episodeUrl.match(/v=([a-zA-Z0-9_-]{11})/);
+      if (ytMatch) {
+        const ytId = ytMatch[1];
+        episodeNum = Object.entries(YOUTUBE_IDS).find(
+          ([_, id]) => id === ytId
+        )?.[0] || null;
+      }
+    }
     episodeTitle = "Specific episode (URL provided)";
     pubDate = "Unknown";
   } else {
@@ -510,13 +657,24 @@ async function runAgent(
         );
         if (resultMatch && resultMatch[1].includes(config.website.replace("https://", "").split("/")[0])) {
           url = resultMatch[1];
-          console.log(`  Found: ${url}`);
+          console.log(`  Found website: ${url}`);
         } else {
-          console.log("  Not found via search. The episode page may not exist yet.");
+          console.log("  Not found on website. Checking YouTube...");
         }
       }
     } catch {
-      console.log("  Search failed. The episode page may not exist yet.");
+      console.log("  Search failed. Checking YouTube...");
+    }
+
+    // If not found on website, check YouTube
+    if (!url && episodeNum && YOUTUBE_IDS[episodeNum]) {
+      url = `https://www.youtube.com/watch?v=${YOUTUBE_IDS[episodeNum]}`;
+      console.log(`  Found YouTube: ${url}`);
+    }
+
+    if (!url) {
+      console.log("  Episode page does not exist yet. Check back later.");
+      return;
     }
   } else {
     console.log(`Step 2: Using provided URL: ${url}\n`);
