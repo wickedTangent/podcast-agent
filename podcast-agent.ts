@@ -32,6 +32,8 @@ const YOUTUBE_CHANNEL = "@EverydayAI_";
 
 // YouTube video IDs for episodes not yet on the website
 const YOUTUBE_IDS: Record<string, string> = {
+  "865": "KmUzS08sK1U",
+  "864": "XDKkzTuL4UY",
   "863": "cGXZ2UHJ_x8",
   "862": "c-u8E15Lj8s",
   "861": "I4CcHbQJTzY",
